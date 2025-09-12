@@ -42,7 +42,9 @@ def get_file(user_id: str, user: int):
     if (user_id, user) not in USER_FILES:
         raise HTTPException(404, "No file uploaded for this user")
     entry = USER_FILES[(user_id, user)]
-    headers = {"Content-Disposition": f'attachment; filename="{entry['filename']}\"'}
+    headers = {
+        "Content-Disposition": f'attachment; filename="{entry["filename"]}"'
+    }
     return Response(entry["content"], media_type="text/plain; charset=utf-8", headers=headers)
 
 MAX_SENTENCES = 200         # guardrail for very large files

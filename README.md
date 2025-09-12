@@ -26,7 +26,8 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Optional: Set OpenAI API key for real LLM similarity
-export OPENAI_API_KEY=your_key_here
+cp .env.example .env
+# Edit .env with your OpenAI API key and desired model
 
 # Start backend with 4 workers
 uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4

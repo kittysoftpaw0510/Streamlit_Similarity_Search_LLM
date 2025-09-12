@@ -1,4 +1,5 @@
 import httpx
+import time
 import asyncio
 from fastapi import FastAPI, Response, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
@@ -23,6 +24,7 @@ class SimilarityResult(BaseModel):
     match_index: Optional[int] = None
     match_sentence: Optional[str] = None
     color: Optional[str] = None  # 'red' for user1, 'blue' for user2
+    llm_elapsed_ms: float = 0.0
 
 @app.get("/health")
 def health():
@@ -88,42 +90,37 @@ async def similarity(req: SimilarityRequest):
         raise HTTPException(400, "user must be 1 or 2")
     color = "red" if req.user == 1 else "blue"
 
-    # ---- get sentences from your uploaded storage ----
     key = (req.user_id, req.user)
     if key not in USER_FILES:
-        # if you still support synthetic defaults, swap this to simulate_file_content
         raise HTTPException(404, "No file uploaded for this user")
     text = USER_FILES[key]["content"]
     sentences = [s.strip() for s in text.splitlines() if s.strip()][:MAX_SENTENCES]
 
     words = (req.text or "").strip().split()
     if len(words) < req.min_prefix_words:
-        return SimilarityResult(match_found=False, color=color)
+        return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=0.0)
 
-    # robust prefixes (few only)
     prefixes = build_prefixes(words, req.min_prefix_words)
     if not prefixes:
-        return SimilarityResult(match_found=False, color=color)
+        return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=0.0)
 
-    # quick token-screening: only keep candidates with minimal overlap
     prefix_token_sets = [norm_tokens(p) for p in prefixes]
     candidates: List[Tuple[int, str]] = []
     for idx, sent in enumerate(sentences):
         ts = norm_tokens(sent)
         if any(token_overlap(ts, ps) >= MIN_TOKEN_OVERLAP for ps in prefix_token_sets):
             candidates.append((idx, sent))
-
-    # if everything filtered out, pick a small fallback subset to try
     if not candidates:
         for idx, sent in enumerate(sentences[: min(30, len(sentences))]):
             candidates.append((idx, sent))
 
-    # concurrent LLM checks with a semaphore + per-call timeout
+    # ---- LLM timing starts here (only measure the actual LLM-check window) ----
+    llm_t0 = time.perf_counter()
+
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
     async with httpx.AsyncClient(timeout=None) as client:
         async def check_one(idx: int, sent: str) -> Optional[int]:
             async with sem:
-                # try each prefix; early return on first hit
                 for pref in prefixes:
                     try:
                         ok = await asyncio.wait_for(llm_is_similar(client, pref, sent), timeout=LLM_CALL_TIMEOUT)
@@ -134,18 +131,28 @@ async def similarity(req: SimilarityRequest):
             return None
 
         tasks = [asyncio.create_task(check_one(idx, sent)) for idx, sent in candidates]
-        for fut in asyncio.as_completed(tasks):
-            res_idx = await fut
-            if res_idx is not None:
-                # Cancel pending tasks to save budget
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                return SimilarityResult(
-                    match_found=True,
-                    match_index=res_idx,
-                    match_sentence=sentences[res_idx],
-                    color=color,
-                )
+        try:
+            for fut in asyncio.as_completed(tasks):
+                res_idx = await fut
+                if res_idx is not None:
+                    # Cancel pending tasks to save budget
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    llm_ms = (time.perf_counter() - llm_t0) * 1000.0
+                    return SimilarityResult(
+                        match_found=True,
+                        match_index=res_idx,
+                        match_sentence=sentences[res_idx],
+                        color=color,
+                        llm_elapsed_ms=llm_ms,
+                    )
+        finally:
+            # Ensure all tasks are cleaned up
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
-    return SimilarityResult(match_found=False, color=color)
+    # No match after all checks
+    llm_ms = (time.perf_counter() - llm_t0) * 1000.0
+    return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=llm_ms)

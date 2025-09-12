@@ -117,10 +117,15 @@ def render_scrollable_sentences(
     height: int = 360,
     key: str = "list",
 ):
+    # palettes
     if color == "red":
-        bg, border, lamp = "#fde8e8", "#f8b4b4", "🔴"
+        bg, border = "#fde8e8", "#f8b4b4"
+        base_color, off_color = "#ef4444", "#e5e7eb"  # on red, off gray
     else:
-        bg, border, lamp = "#e1effe", "#a4cafe", "🔵"
+        bg, border = "#e1effe", "#a4cafe"
+        base_color, off_color = "#3b82f6", "#e5e7eb"  # on blue, off gray
+
+    has_match = match_idx is not None
 
     items_html = []
     for i, s in enumerate(sentences):
@@ -137,9 +142,14 @@ def render_scrollable_sentences(
     target_id = f"row-{key}-{match_idx}" if match_idx is not None else ""
 
     html_content = f"""
-    <div class=\"wrap\">
-      <div class=\"caption\">{lamp} Shows all {len(sentences)} (auto-scrolls to match)</div>
-      <div id=\"scroller-{key}\" class=\"scroller\">
+    <div class="wrap">
+      <div class="caption">
+        <span class="status">
+          <span class="lamp {'blink' if has_match else ''}" aria-label="match status"></span>
+          <span class="cap-text">Shows all {len(sentences)} (auto-scrolls to match)</span>
+        </span>
+      </div>
+      <div id="scroller-{key}" class="scroller">
         {''.join(items_html)}
       </div>
     </div>
@@ -147,10 +157,35 @@ def render_scrollable_sentences(
     <style>
       .wrap {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }}
       .caption {{ font-size: 12px; color: #666; margin-bottom: 6px; }}
+      .status {{ display: inline-flex; align-items: center; gap: 8px; }}
+      .cap-text {{ vertical-align: middle; }}
+
       .scroller {{ border: 1px solid #e5e7eb; border-radius: 10px; height: {height}px; overflow-y: auto; padding: 8px; scroll-behavior: smooth; background: white; }}
       .row {{ display: grid; grid-template-columns: 48px 1fr; gap: 10px; align-items: start; padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; margin-bottom: 6px; word-break: break-word; }}
       .row .num {{ color: #6b7280; font-variant-numeric: tabular-nums; }}
       .row.match {{ background: {bg}; border-color: {border}; color: #111111; }}
+
+      /* Lamp */
+      .lamp {{
+        width: 14px; height: 14px; border-radius: 9999px; display: inline-block;
+        background: {off_color};               /* OFF state */
+        box-shadow: 0 0 0 0 rgba(0,0,0,0);     /* no glow when off */
+        position: relative;
+        outline: 1px solid rgba(255,255,255,0.5);
+      }}
+
+      /* ON/OFF hard toggle blink: off -> on -> off -> ... */
+      .lamp.blink {{
+        animation: hardBlink 800ms steps(1, end) infinite;
+      }}
+
+      /* First half OFF (gray), second half ON (colored with glow) */
+      @keyframes hardBlink {{
+        0%   {{ background: {off_color}; box-shadow: 0 0 0 0 rgba(0,0,0,0); }}
+        49%  {{ background: {off_color}; box-shadow: 0 0 0 0 rgba(0,0,0,0); }}
+        50%  {{ background: {base_color}; box-shadow: 0 0 10px 4px {base_color}; }}
+        100% {{ background: {base_color}; box-shadow: 0 0 10px 4px {base_color}; }}
+      }}
     </style>
 
     <script>
@@ -169,6 +204,7 @@ def render_scrollable_sentences(
     """
 
     components.html(html_content, height=height + 40, scrolling=False)
+
 
 
 # ============ SIDEBAR ============
@@ -229,7 +265,7 @@ with colM:
     def _on_clear_u1():
         _queue_clear("u1")
 
-    with st.form("u1_form", clear_on_submit=True):
+    with st.form("u1_form", clear_on_submit=False):
         st.text_area(
             "Type for User 1",
             key="u1_text",
@@ -265,9 +301,12 @@ with colM:
                 st.warning(f"U1 similarity failed: {e}")
             else:
                 st.session_state.u1_match_idx = res.get("match_index") if res.get("match_found") else None
+                # NEW: show LLM time
+                llm_ms = res.get("llm_elapsed_ms")
+                if llm_ms is not None:
+                    st.caption(f"LLM time (U1): {llm_ms:.0f} ms")
                 if st.session_state.auto_clear_after_match and st.session_state.u1_match_idx is not None:
                     _queue_clear("u1")
-                    # st.rerun()
 
     # User 2
     st.subheader("User 2 Input (matches Window 2)")
@@ -275,7 +314,7 @@ with colM:
     def _on_clear_u2():
         _queue_clear("u2")
 
-    with st.form("u2_form", clear_on_submit=True):
+    with st.form("u2_form", clear_on_submit=False):
         st.text_area(
             "Type for User 2",
             key="u2_text",
@@ -310,9 +349,12 @@ with colM:
                 st.warning(f"U2 similarity failed: {e}")
             else:
                 st.session_state.u2_match_idx = res.get("match_index") if res.get("match_found") else None
+                # NEW: show LLM time
+                llm_ms = res.get("llm_elapsed_ms")
+                if llm_ms is not None:
+                    st.caption(f"LLM time (U2): {llm_ms:.0f} ms")
                 if st.session_state.auto_clear_after_match and st.session_state.u2_match_idx is not None:
                     _queue_clear("u2")
-                    # st.rerun()
 
 # --- LEFT: Window 1 ---
 with colL:

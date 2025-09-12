@@ -17,9 +17,18 @@ for k, v in {
     "u1_typing": False, "u2_typing": False,
     "u1_match_idx": None, "u2_match_idx": None,
     "u1_prev_text": "", "u2_prev_text": "",
+    "u1_file_sig": None, "u2_file_sig": None,   # signature to detect base text changes
+    "u1_text": "", "u2_text": "",               # ensure textareas exist in session_state
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+def _reset_user(prefix: str) -> None:
+    """Reset per-user UI state (highlight, typing flag, previous text, input content)."""
+    st.session_state[f"{prefix}_match_idx"] = None
+    st.session_state[f"{prefix}_prev_text"] = ""
+    st.session_state[f"{prefix}_typing"] = False
+    st.session_state[f"{prefix}_text"] = ""
 
 # ============ HELPERS ============
 def parse_disposition_filename(content_disposition: Optional[str]) -> Optional[str]:
@@ -185,34 +194,43 @@ def render_scrollable_sentences(
 
 # ============ SIDEBAR ============
 st.sidebar.title("Upload base texts")
-# user_id = st.sidebar.text_input("User ID", value="u1")
 
 up1 = st.sidebar.file_uploader("Upload file for User 1", type=["txt"], key="up1")
 if up1 is not None and st.sidebar.button("Set User 1 file", use_container_width=True, key="btn_u1"):
-    import requests  # ensure imported at top
     try:
-        upload_file_to_user_slot(USER1_ID, 1, up1)  # your helper
+        upload_file_to_user_slot(USER1_ID, 1, up1)
     except requests.RequestException as e:
         st.sidebar.error(f"Failed to upload for User 1: {e}")
     else:
+        _reset_user("u1")  # clear highlight and text immediately
         st.sidebar.success(f"Uploaded {up1.name} for User 1")
         st.rerun()  # don't wrap this in try/except
 
 up2 = st.sidebar.file_uploader("Upload file for User 2", type=["txt"], key="up2")
 if up2 is not None and st.sidebar.button("Set User 2 file", use_container_width=True, key="btn_u2"):
-    import requests
     try:
         upload_file_to_user_slot(USER2_ID, 2, up2)
     except requests.RequestException as e:
         st.sidebar.error(f"Failed to upload for User 2: {e}")
     else:
+        _reset_user("u2")  # clear highlight and text immediately
         st.sidebar.success(f"Uploaded {up2.name} for User 2")
         st.rerun()
-
 
 # ============ FETCH SENTENCES ============
 sent_u1, name_u1 = fetch_sentences_and_name(USER1_ID, 1)
 sent_u2, name_u2 = fetch_sentences_and_name(USER2_ID, 2)
+
+# Detect base text changes and reset highlights (before any rendering)
+sig1 = (name_u1 or "", len(sent_u1))
+if st.session_state.u1_file_sig != sig1:
+    st.session_state.u1_file_sig = sig1
+    _reset_user("u1")
+
+sig2 = (name_u2 or "", len(sent_u2))
+if st.session_state.u2_file_sig != sig2:
+    st.session_state.u2_file_sig = sig2
+    _reset_user("u2")
 
 # ============ LAYOUT (process inputs first, then render lists) ============
 # IMPORTANT: compute matches BEFORE rendering left/right to avoid a one-rerun lag.
@@ -243,6 +261,10 @@ with colM:
         submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
 
     u1_val = st.session_state.get("u1_text", "")
+    # Optional nicety: clear highlight when the input is empty
+    if not u1_val.strip():
+        st.session_state.u1_match_idx = None
+
     if submitted_u1 or (
         st.session_state.u1_typing
         and u1_val != st.session_state.get("u1_prev_text", "")
@@ -279,6 +301,10 @@ with colM:
         submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
 
     u2_val = st.session_state.get("u2_text", "")
+    # Optional nicety: clear highlight when the input is empty
+    if not u2_val.strip():
+        st.session_state.u2_match_idx = None
+
     if submitted_u2 or (
         st.session_state.u2_typing
         and u2_val != st.session_state.get("u2_prev_text", "")

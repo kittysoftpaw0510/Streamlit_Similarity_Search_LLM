@@ -237,16 +237,17 @@ with colM:
             label_visibility="collapsed",
             placeholder="Type for User 1…",
         )
-        submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
-        # c1, c2 = st.columns(2)
-        # with c1:
-        #     submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
-        # with c2:
-        #     st.form_submit_button(
-        #         "🧹 New input",
-        #         use_container_width=True,
-        #         on_click=_on_clear_u1,
-        #     )
+        # submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
+        with c2:
+            st.form_submit_button(
+                "🧹 New input",
+                use_container_width=True,
+                on_click=_on_clear_u1,
+            )
 
     # If clear was requested, rerun so it applies before widgets render next time
     if st.session_state.u1_clear_next:
@@ -282,17 +283,17 @@ with colM:
             label_visibility="collapsed",
             placeholder="Type for User 2…",
         )
-        submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
+        # submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
 
-        # c3, c4 = st.columns(2)
-        # with c3:
-        #     submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
-        # with c4:
-        #     st.form_submit_button(
-        #         "🧹 New input",
-        #         use_container_width=True,
-        #         on_click=_on_clear_u2,
-        #     )
+        c3, c4 = st.columns(2)
+        with c3:
+            submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
+        with c4:
+            st.form_submit_button(
+                "🧹 New input",
+                use_container_width=True,
+                on_click=_on_clear_u2,
+            )
 
     if st.session_state.u2_clear_next:
         st.rerun()

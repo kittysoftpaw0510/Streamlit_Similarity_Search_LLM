@@ -29,6 +29,9 @@ for k, v in {
 
     # optional UX
     "auto_clear_after_match": False,
+
+    # scoring method shared across both panes
+    "scoring_method": "json",  # "json" or "logprob"
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -57,6 +60,7 @@ if st.session_state.u2_clear_next:
 
 
 # ============ HELPERS ============
+
 def parse_disposition_filename(content_disposition: Optional[str]) -> Optional[str]:
     if not content_disposition:
         return None
@@ -92,12 +96,13 @@ def fetch_sentences_and_name(user_id: str, user: int) -> Tuple[List[str], Option
         return [], None
 
 
-def request_similarity(user_id: str, user: int, text: str):
+def request_similarity(user_id: str, user: int, text: str, method: str):
     payload = {
         "user_id": user_id,
         "user": user,
         "text": text,
         "min_prefix_words": MIN_PREFIX_WORDS,
+        "method": method,
         # "top_k": 1,  # default is 1
     }
     r = requests.post(f"{BACKEND_BASE}/similarity", json=payload, timeout=60)
@@ -199,7 +204,6 @@ def render_scrollable_sentences(
     components.html(html_content, height=height + 40, scrolling=False)
 
 
-
 # ============ SIDEBAR ============
 st.sidebar.title("Upload base texts")
 
@@ -228,6 +232,20 @@ if up2 is not None and st.sidebar.button("Set User 2 file", use_container_width=
         _queue_clear("u2")
         st.sidebar.success(f"Uploaded {up2.name} for User 2")
         st.rerun()
+
+st.sidebar.markdown("---")
+# ===== Scoring mode switcher =====
+mode_label = st.sidebar.radio(
+    "Scoring method",
+    ("Prompt → numeric score", "Yes/No logprob (OpenAI)"),
+    help=(
+        "Choose how to score similarity.\n\n"
+        "• Prompt → numeric: the model returns a JSON {score} in [0,1].\n"
+        "• Yes/No logprob: the model must support token logprobs; we use P(Yes)."
+    ),
+)
+
+st.session_state.scoring_method = "json" if mode_label.startswith("Prompt") else "logprob"
 
 # ============ FETCH SENTENCES ============
 sent_u1, name_u1 = fetch_sentences_and_name(USER1_ID, 1)
@@ -285,7 +303,7 @@ with colM:
     if submitted_u1 and len(u1_val.split()) >= MIN_PREFIX_WORDS:
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER1_ID, 1, u1_val)
+                res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method)
             except requests.RequestException as e:
                 st.warning(f"U1 similarity failed: {e}")
             else:
@@ -336,7 +354,7 @@ with colM:
     if submitted_u2 and len(u2_val.split()) >= MIN_PREFIX_WORDS:
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER2_ID, 2, u2_val)
+                res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method)
             except requests.RequestException as e:
                 st.warning(f"U2 similarity failed: {e}")
             else:

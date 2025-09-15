@@ -49,7 +49,6 @@ streamlit run app.py
 
 - Frontend: http://localhost:8501
 - Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
 
 ## How It Works
 

@@ -1,12 +1,11 @@
 import time
-import httpx
 from fastapi import FastAPI, Response, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Optional, List, Tuple, Set
 
-from llm import most_similar  # <- our scoring helper
+from llm import most_similar, close_shared_client  # updated llm helpers
 
-app = FastAPI(title="Stateless Similarity Backend", version="1.3.0")
+app = FastAPI(title="Stateless Similarity Backend", version="1.5.0")
 
 # simple in-memory storage
 USER_FILES = {}  # key: (user_id, user) -> {"filename": str, "content": str}
@@ -57,6 +56,7 @@ def get_file(user_id: str, user: int):
 MAX_SENTENCES = 200         # guardrail for very large files
 MIN_TOKEN_OVERLAP = 0.15    # quick filter before LLM
 PREFIX_STRATEGY = "few"     # "few" or "longest"
+MAX_LLM_CANDIDATES = 60     # hard cap on calls to LLM scorer after prefilter
 
 
 def norm_tokens(s: str) -> Set[str]:
@@ -119,21 +119,30 @@ async def similarity(req: SimilarityRequest):
         ts = norm_tokens(sent)
         if any(token_overlap(ts, ps) >= MIN_TOKEN_OVERLAP for ps in prefix_token_sets):
             candidates.append((idx, sent))
+
     if not candidates:
         # Fallback: first 30 lines as a small pool
         for idx, sent in enumerate(sentences[: min(30, len(sentences))]):
             candidates.append((idx, sent))
+
+    # Hard cap LLM workload
+    if len(candidates) > MAX_LLM_CANDIDATES:
+        candidates = candidates[:MAX_LLM_CANDIDATES]
 
     # Build pool of candidate strings
     pool = [s for _, s in candidates]
 
     # ---- Scoring (LLM) ----
     t0 = time.perf_counter()
-    async with httpx.AsyncClient(timeout=None) as client:
-        query = prefixes[0]  # use first viable prefix
-        ranked = await most_similar(
-            client, query, pool, top_k=max(1, req.top_k), method=req.method
-        )
+    query = prefixes[0]  # use first viable prefix
+
+    ranked = await most_similar(
+        client=None,  # None -> use shared AsyncClient inside llm.py
+        typed_prefix=query,
+        candidates=pool,
+        top_k=max(1, req.top_k),
+        method=req.method,
+    )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     # Helper: map sentences back to first unused matching global index (handles duplicates)
@@ -151,7 +160,6 @@ async def similarity(req: SimilarityRequest):
         best_sentence, best_score = ranked
         used = set()
         global_idx = first_unused_index_for(best_sentence, used)
-        # If somehow None, default to 0
         if global_idx is None:
             global_idx = 0
         best_score = round(float(best_score), 4)
@@ -189,3 +197,8 @@ async def similarity(req: SimilarityRequest):
             color=color,
             llm_elapsed_ms=elapsed_ms,
         )
+
+# Cleanly close shared HTTP resources when FastAPI shuts down
+@app.on_event("shutdown")
+async def _shutdown_event():
+    await close_shared_client()

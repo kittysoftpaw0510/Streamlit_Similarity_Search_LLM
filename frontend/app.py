@@ -32,6 +32,9 @@ for k, v in {
 
     # scoring method shared across both panes
     "scoring_method": "json",  # "json" or "logprob"
+
+    # similarity threshold
+    "similarity_threshold": 0.5,  # default threshold for match detection
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -96,13 +99,14 @@ def fetch_sentences_and_name(user_id: str, user: int) -> Tuple[List[str], Option
         return [], None
 
 
-def request_similarity(user_id: str, user: int, text: str, method: str):
+def request_similarity(user_id: str, user: int, text: str, method: str, threshold: float = 0.0):
     payload = {
         "user_id": user_id,
         "user": user,
         "text": text,
         "min_prefix_words": MIN_PREFIX_WORDS,
         "method": method,
+        "threshold": threshold,
         # "top_k": 1,  # default is 1
     }
     r = requests.post(f"{BACKEND_BASE}/similarity", json=payload, timeout=60)
@@ -247,6 +251,25 @@ mode_label = st.sidebar.radio(
 
 st.session_state.scoring_method = "json" if mode_label.startswith("Prompt") else "logprob"
 
+st.sidebar.markdown("---")
+# ===== Similarity threshold slider =====
+st.sidebar.markdown("**Similarity Threshold**")
+threshold_value = st.sidebar.slider(
+    "Minimum score for match detection",
+    min_value=0.0,
+    max_value=1.0,
+    value=st.session_state.similarity_threshold,
+    step=0.05,
+    help=(
+        "Set the minimum similarity score required to consider a match found.\n\n"
+        "• 0.0: Any similarity score will be considered a match\n"
+        "• 0.5: Moderate similarity required (recommended)\n"
+        "• 0.8: High similarity required\n"
+        "• 1.0: Only perfect matches"
+    ),
+)
+st.session_state.similarity_threshold = threshold_value
+
 # ============ FETCH SENTENCES ============
 sent_u1, name_u1 = fetch_sentences_and_name(USER1_ID, 1)
 sent_u2, name_u2 = fetch_sentences_and_name(USER2_ID, 2)
@@ -303,7 +326,7 @@ with colM:
     if submitted_u1 and len(u1_val.split()) >= MIN_PREFIX_WORDS:
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method)
+                res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
             except requests.RequestException as e:
                 st.warning(f"U1 similarity failed: {e}")
             else:
@@ -354,7 +377,7 @@ with colM:
     if submitted_u2 and len(u2_val.split()) >= MIN_PREFIX_WORDS:
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method)
+                res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
             except requests.RequestException as e:
                 st.warning(f"U2 similarity failed: {e}")
             else:

@@ -18,6 +18,7 @@ class SimilarityRequest(BaseModel):
     min_prefix_words: int = 5
     top_k: int = 1
     method: str = Field("json", description="'json' (prompt returns number) or 'logprob' (Yes/No token prob)")
+    threshold: float = Field(0.0, description="Minimum similarity score threshold for match_found (0.0-1.0)")
 
 class SimilarityResult(BaseModel):
     match_found: bool
@@ -155,7 +156,7 @@ async def similarity(req: SimilarityRequest):
             global_idx = 0
         best_score = round(float(best_score), 4)
         return SimilarityResult(
-            match_found=best_score > 0.0,
+            match_found=best_score >= req.threshold,
             match_index=global_idx,
             best_index=global_idx,              # optional alias
             best_sentence=best_sentence,
@@ -179,7 +180,7 @@ async def similarity(req: SimilarityRequest):
 
         best_global_idx, best_score = topk_global[0]
         return SimilarityResult(
-            match_found=best_score > 0.0,
+            match_found=best_score >= req.threshold,
             match_index=best_global_idx,
             best_index=best_global_idx,
             best_sentence=sentences[best_global_idx],

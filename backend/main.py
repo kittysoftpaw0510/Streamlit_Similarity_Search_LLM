@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple, Set
 
 from llm import most_similar  # <- our scoring helper
 
-app = FastAPI(title="Stateless Similarity Backend", version="1.2.0")
+app = FastAPI(title="Stateless Similarity Backend", version="1.3.0")
 
 # simple in-memory storage
 USER_FILES = {}  # key: (user_id, user) -> {"filename": str, "content": str}
@@ -17,6 +17,7 @@ class SimilarityRequest(BaseModel):
     text: str = ""
     min_prefix_words: int = 5
     top_k: int = 1
+    method: str = Field("json", description="'json' (prompt returns number) or 'logprob' (Yes/No token prob)")
 
 class SimilarityResult(BaseModel):
     match_found: bool
@@ -56,8 +57,10 @@ MAX_SENTENCES = 200         # guardrail for very large files
 MIN_TOKEN_OVERLAP = 0.15    # quick filter before LLM
 PREFIX_STRATEGY = "few"     # "few" or "longest"
 
+
 def norm_tokens(s: str) -> Set[str]:
     return {t.lower() for t in s.strip().split() if t.strip()}
+
 
 def token_overlap(a: Set[str], b: Set[str]) -> float:
     if not a or not b:
@@ -65,6 +68,7 @@ def token_overlap(a: Set[str], b: Set[str]) -> float:
     inter = len(a & b)
     denom = min(len(a), len(b))
     return inter / denom
+
 
 def build_prefixes(words: List[str], min_prefix_words: int) -> List[str]:
     if PREFIX_STRATEGY == "longest":
@@ -83,6 +87,7 @@ def build_prefixes(words: List[str], min_prefix_words: int) -> List[str]:
         if p not in seen:
             out.append(p); seen.add(p)
     return out
+
 
 @app.post("/similarity", response_model=SimilarityResult)
 async def similarity(req: SimilarityRequest):
@@ -125,7 +130,9 @@ async def similarity(req: SimilarityRequest):
     t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=None) as client:
         query = prefixes[0]  # use first viable prefix
-        ranked = await most_similar(client, query, pool, top_k=max(1, req.top_k))
+        ranked = await most_similar(
+            client, query, pool, top_k=max(1, req.top_k), method=req.method
+        )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     # Helper: map sentences back to first unused matching global index (handles duplicates)

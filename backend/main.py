@@ -1,14 +1,12 @@
-import httpx
 import time
-import asyncio
+import httpx
 from fastapi import FastAPI, Response, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Optional, List, Tuple, Set
 
-from textgen import generate_sentences, simulate_file_content
-from llm import llm_is_similar
+from llm import most_similar  # <- our scoring helper
 
-app = FastAPI(title="Stateless Similarity Backend", version="1.0.0")
+app = FastAPI(title="Stateless Similarity Backend", version="1.2.0")
 
 # simple in-memory storage
 USER_FILES = {}  # key: (user_id, user) -> {"filename": str, "content": str}
@@ -18,11 +16,18 @@ class SimilarityRequest(BaseModel):
     user: int = Field(..., description="1 or 2; 1 -> a.txt, 2 -> b.txt")
     text: str = ""
     min_prefix_words: int = 5
+    top_k: int = 1
 
 class SimilarityResult(BaseModel):
     match_found: bool
+    # What the frontend reads to highlight
     match_index: Optional[int] = None
-    match_sentence: Optional[str] = None
+    # Alias (optional; handy for debugging)
+    best_index: Optional[int] = None
+    best_sentence: Optional[str] = None
+    best_score: Optional[float] = None
+    # For top-k mode: list of (global_index, score)
+    topk: Optional[List[Tuple[int, float]]] = None
     color: Optional[str] = None  # 'red' for user1, 'blue' for user2
     llm_elapsed_ms: float = 0.0
 
@@ -31,8 +36,7 @@ def health():
     return {"ok": True}
 
 @app.post("/upload/{user_id}/{user}")
-async def upload_file(user: int, file: UploadFile = File(...)):
-    user_id = f"user{user}"
+async def upload_file(user_id: str, user: int, file: UploadFile = File(...)):
     if user not in (1, 2):
         raise HTTPException(400, "user must be 1 or 2")
     content = (await file.read()).decode("utf-8", errors="replace")
@@ -44,14 +48,11 @@ def get_file(user_id: str, user: int):
     if (user_id, user) not in USER_FILES:
         raise HTTPException(404, "No file uploaded for this user")
     entry = USER_FILES[(user_id, user)]
-    headers = {
-        "Content-Disposition": f'attachment; filename="{entry["filename"]}"'
-    }
+    headers = {"Content-Disposition": f'attachment; filename="{entry["filename"]}"'}
     return Response(entry["content"], media_type="text/plain; charset=utf-8", headers=headers)
 
+# Tunables
 MAX_SENTENCES = 200         # guardrail for very large files
-MAX_CONCURRENCY = 6         # # of parallel LLM checks
-LLM_CALL_TIMEOUT = 6.0      # per-call timeout seconds
 MIN_TOKEN_OVERLAP = 0.15    # quick filter before LLM
 PREFIX_STRATEGY = "few"     # "few" or "longest"
 
@@ -72,13 +73,12 @@ def build_prefixes(words: List[str], min_prefix_words: int) -> List[str]:
     variants = []
     if len(words) >= min_prefix_words:
         variants.append(" ".join(words))
-        if len(words) > 12:
-            variants.append(" ".join(words[-12:]))
         if len(words) > 24:
             variants.append(" ".join(words[-24:]))
+        if len(words) > 12:
+            variants.append(" ".join(words[-12:]))
     # de-dup while preserving order
-    seen = set()
-    out = []
+    seen = set(); out = []
     for p in variants:
         if p not in seen:
             out.append(p); seen.add(p)
@@ -93,6 +93,8 @@ async def similarity(req: SimilarityRequest):
     key = (req.user_id, req.user)
     if key not in USER_FILES:
         raise HTTPException(404, "No file uploaded for this user")
+
+    # Split file into lines (sentences)
     text = USER_FILES[key]["content"]
     sentences = [s.strip() for s in text.splitlines() if s.strip()][:MAX_SENTENCES]
 
@@ -104,6 +106,7 @@ async def similarity(req: SimilarityRequest):
     if not prefixes:
         return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=0.0)
 
+    # Prefilter by cheap token overlap
     prefix_token_sets = [norm_tokens(p) for p in prefixes]
     candidates: List[Tuple[int, str]] = []
     for idx, sent in enumerate(sentences):
@@ -111,48 +114,70 @@ async def similarity(req: SimilarityRequest):
         if any(token_overlap(ts, ps) >= MIN_TOKEN_OVERLAP for ps in prefix_token_sets):
             candidates.append((idx, sent))
     if not candidates:
+        # Fallback: first 30 lines as a small pool
         for idx, sent in enumerate(sentences[: min(30, len(sentences))]):
             candidates.append((idx, sent))
 
-    # ---- LLM timing starts here (only measure the actual LLM-check window) ----
-    llm_t0 = time.perf_counter()
+    # Build pool of candidate strings
+    pool = [s for _, s in candidates]
 
-    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+    # ---- Scoring (LLM) ----
+    t0 = time.perf_counter()
     async with httpx.AsyncClient(timeout=None) as client:
-        async def check_one(idx: int, sent: str) -> Optional[int]:
-            async with sem:
-                for pref in prefixes:
-                    try:
-                        ok = await asyncio.wait_for(llm_is_similar(client, pref, sent), timeout=LLM_CALL_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        ok = False
-                    if ok:
-                        return idx
-            return None
+        query = prefixes[0]  # use first viable prefix
+        ranked = await most_similar(client, query, pool, top_k=max(1, req.top_k))
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-        tasks = [asyncio.create_task(check_one(idx, sent)) for idx, sent in candidates]
-        try:
-            for fut in asyncio.as_completed(tasks):
-                res_idx = await fut
-                if res_idx is not None:
-                    # Cancel pending tasks to save budget
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    llm_ms = (time.perf_counter() - llm_t0) * 1000.0
-                    return SimilarityResult(
-                        match_found=True,
-                        match_index=res_idx,
-                        match_sentence=sentences[res_idx],
-                        color=color,
-                        llm_elapsed_ms=llm_ms,
-                    )
-        finally:
-            # Ensure all tasks are cleaned up
-            for t in tasks:
-                if not t.done():
-                    t.cancel()
+    # Helper: map sentences back to first unused matching global index (handles duplicates)
+    def first_unused_index_for(sentence: str, used_locals: set) -> Optional[int]:
+        for local_i, (global_i, s) in enumerate(candidates):
+            if local_i in used_locals:
+                continue
+            if s == sentence:
+                used_locals.add(local_i)
+                return global_i
+        return None
 
-    # No match after all checks
-    llm_ms = (time.perf_counter() - llm_t0) * 1000.0
-    return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=llm_ms)
+    if req.top_k <= 1:
+        # most_similar returns: (best_sentence, best_score)
+        best_sentence, best_score = ranked
+        used = set()
+        global_idx = first_unused_index_for(best_sentence, used)
+        # If somehow None, default to 0
+        if global_idx is None:
+            global_idx = 0
+        best_score = round(float(best_score), 4)
+        return SimilarityResult(
+            match_found=best_score > 0.0,
+            match_index=global_idx,
+            best_index=global_idx,              # optional alias
+            best_sentence=best_sentence,
+            best_score=best_score,
+            color=color,
+            llm_elapsed_ms=elapsed_ms,
+        )
+    else:
+        # ranked: [(sentence, score), ...]
+        used = set()
+        topk_global: List[Tuple[int, float]] = []
+        for sent, sc in ranked:
+            gi = first_unused_index_for(sent, used)
+            if gi is not None:
+                topk_global.append((gi, round(float(sc), 4)))
+            if len(topk_global) >= req.top_k:
+                break
+
+        if not topk_global:
+            return SimilarityResult(match_found=False, color=color, llm_elapsed_ms=elapsed_ms)
+
+        best_global_idx, best_score = topk_global[0]
+        return SimilarityResult(
+            match_found=best_score > 0.0,
+            match_index=best_global_idx,
+            best_index=best_global_idx,
+            best_sentence=sentences[best_global_idx],
+            best_score=best_score,
+            topk=topk_global,
+            color=color,
+            llm_elapsed_ms=elapsed_ms,
+        )

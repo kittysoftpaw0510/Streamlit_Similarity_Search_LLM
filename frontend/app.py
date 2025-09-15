@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 # ============ CONFIG ============
 st.set_page_config(page_title="Similarity Highlighter", layout="wide")
 BACKEND_BASE = st.secrets.get("BACKEND_BASE", "http://localhost:8000")
-MIN_PREFIX_WORDS = 5
+MIN_PREFIX_WORDS = 3
 USER1_ID = "user1"
 USER2_ID = "user2"
 
@@ -98,16 +98,11 @@ def request_similarity(user_id: str, user: int, text: str):
         "user": user,
         "text": text,
         "min_prefix_words": MIN_PREFIX_WORDS,
+        # "top_k": 1,  # default is 1
     }
     r = requests.post(f"{BACKEND_BASE}/similarity", json=payload, timeout=60)
     r.raise_for_status()
     return r.json()
-
-
-def upload_file_to_user_slot(user_id: str, user: int, file) -> None:
-    files = {"file": (file.name, file.getvalue(), "text/plain")}
-    r = requests.post(f"{BACKEND_BASE}/upload/{user_id}/{user}", files=files, timeout=20)
-    r.raise_for_status()
 
 
 def render_scrollable_sentences(
@@ -168,18 +163,16 @@ def render_scrollable_sentences(
       /* Lamp */
       .lamp {{
         width: 14px; height: 14px; border-radius: 9999px; display: inline-block;
-        background: {off_color};               /* OFF state */
-        box-shadow: 0 0 0 0 rgba(0,0,0,0);     /* no glow when off */
+        background: {off_color};
+        box-shadow: 0 0 0 0 rgba(0,0,0,0);
         position: relative;
         outline: 1px solid rgba(255,255,255,0.5);
       }}
 
-      /* ON/OFF hard toggle blink: off -> on -> off -> ... */
       .lamp.blink {{
         animation: hardBlink 800ms steps(1, end) infinite;
       }}
 
-      /* First half OFF (gray), second half ON (colored with glow) */
       @keyframes hardBlink {{
         0%   {{ background: {off_color}; box-shadow: 0 0 0 0 rgba(0,0,0,0); }}
         49%  {{ background: {off_color}; box-shadow: 0 0 0 0 rgba(0,0,0,0); }}
@@ -210,15 +203,12 @@ def render_scrollable_sentences(
 # ============ SIDEBAR ============
 st.sidebar.title("Upload base texts")
 
-# st.sidebar.checkbox(
-#     "Auto-clear input after each successful match",
-#     key="auto_clear_after_match",
-# )
-
 up1 = st.sidebar.file_uploader("Upload file for User 1", type=["txt"], key="up1")
 if up1 is not None and st.sidebar.button("Set User 1 file", use_container_width=True, key="btn_u1"):
     try:
-        upload_file_to_user_slot(USER1_ID, 1, up1)
+        files = {"file": (up1.name, up1.getvalue(), "text/plain")}
+        r = requests.post(f"{BACKEND_BASE}/upload/{USER1_ID}/1", files=files, timeout=20)
+        r.raise_for_status()
     except requests.RequestException as e:
         st.sidebar.error(f"Failed to upload for User 1: {e}")
     else:
@@ -229,7 +219,9 @@ if up1 is not None and st.sidebar.button("Set User 1 file", use_container_width=
 up2 = st.sidebar.file_uploader("Upload file for User 2", type=["txt"], key="up2")
 if up2 is not None and st.sidebar.button("Set User 2 file", use_container_width=True, key="btn_u2"):
     try:
-        upload_file_to_user_slot(USER2_ID, 2, up2)
+        files = {"file": (up2.name, up2.getvalue(), "text/plain")}
+        r = requests.post(f"{BACKEND_BASE}/upload/{USER2_ID}/2", files=files, timeout=20)
+        r.raise_for_status()
     except requests.RequestException as e:
         st.sidebar.error(f"Failed to upload for User 2: {e}")
     else:
@@ -254,7 +246,7 @@ if st.session_state.u2_file_sig != sig2:
     _queue_clear("u2")
     st.rerun()
 
-# ============ LAYOUT (process inputs first, then render lists) ============
+# ============ LAYOUT ============
 colL, colM, colR = st.columns([1.6, 1.2, 1.6])
 
 # --- MIDDLE: forms + similarity ---
@@ -273,8 +265,6 @@ with colM:
             label_visibility="collapsed",
             placeholder="Type for User 1…",
         )
-        # submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
-
         c1, c2 = st.columns(2)
         with c1:
             submitted_u1 = st.form_submit_button("🔍 Match (U1)", use_container_width=True)
@@ -285,7 +275,6 @@ with colM:
                 on_click=_on_clear_u1,
             )
 
-    # If clear was requested, rerun so it applies before widgets render next time
     if st.session_state.u1_clear_next:
         st.rerun()
 
@@ -301,10 +290,15 @@ with colM:
                 st.warning(f"U1 similarity failed: {e}")
             else:
                 st.session_state.u1_match_idx = res.get("match_index") if res.get("match_found") else None
-                # NEW: show LLM time
                 llm_ms = res.get("llm_elapsed_ms")
                 if llm_ms is not None:
                     st.caption(f"LLM time (U1): {llm_ms:.0f} ms")
+                if res.get("match_found"):
+                    best_score = res.get("best_score")
+                    if isinstance(best_score, (int, float)):
+                        st.metric("Best score (U1)", f"{best_score:.3f}")
+                    else:
+                        st.caption("Best score (U1): n/a")
                 if st.session_state.auto_clear_after_match and st.session_state.u1_match_idx is not None:
                     _queue_clear("u1")
 
@@ -322,8 +316,6 @@ with colM:
             label_visibility="collapsed",
             placeholder="Type for User 2…",
         )
-        # submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
-
         c3, c4 = st.columns(2)
         with c3:
             submitted_u2 = st.form_submit_button("🔎 Match (U2)", use_container_width=True)
@@ -349,10 +341,15 @@ with colM:
                 st.warning(f"U2 similarity failed: {e}")
             else:
                 st.session_state.u2_match_idx = res.get("match_index") if res.get("match_found") else None
-                # NEW: show LLM time
                 llm_ms = res.get("llm_elapsed_ms")
                 if llm_ms is not None:
                     st.caption(f"LLM time (U2): {llm_ms:.0f} ms")
+                if res.get("match_found"):
+                    best_score = res.get("best_score")
+                    if isinstance(best_score, (int, float)):
+                        st.metric("Best score (U2)", f"{best_score:.3f}")
+                    else:
+                        st.caption("Best score (U2): n/a")
                 if st.session_state.auto_clear_after_match and st.session_state.u2_match_idx is not None:
                     _queue_clear("u2")
 
@@ -383,7 +380,3 @@ with colR:
         height=360,
         key="right",
     )
-
-st.caption(
-    "Tip: Use **New input** to clear the box. Or turn on **Auto-clear** in the sidebar to wipe automatically after a successful match."
-)

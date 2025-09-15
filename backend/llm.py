@@ -62,6 +62,8 @@ def _fallback_score(typed_prefix: str, sentence: str) -> float:
     Conservative lexical overlap fallback in [0,1] if no API key or API fails.
     Uses token overlap weighted by token length and lightly boosts for order.
     """
+    print("[INFO] Fallback used")
+
     def tokens(s: str) -> List[str]:
         return [w.lower().strip(",.!?:;()[]\"'") for w in s.split() if w.strip()]
 

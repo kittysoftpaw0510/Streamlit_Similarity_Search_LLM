@@ -248,4 +248,4 @@ async def most_similar(
         scores.append(float(r))
 
     ranked = sorted(zip(cand_list, scores), key=lambda x: x[1], reverse=True)
-    return ranked[0] if top_k <= 1 else ranked[: min(top_k, len(ranked))]
+    return ranked[0] if top_k <= 1 else ranked[: min(top_k, len(ranked))], zip(cand_list, scores)

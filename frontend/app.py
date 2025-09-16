@@ -328,20 +328,43 @@ with colM:
             try:
                 res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
             except requests.RequestException as e:
-                st.warning(f"U1 similarity failed: {e}")
+                st.error(f"U1 similarity failed: {e}")
+                # Try to extract more details from the response
+                try:
+                    if hasattr(e, 'response') and e.response is not None:
+                        error_detail = e.response.json().get('detail', str(e))
+                        st.error(f"Detailed error: {error_detail}")
+                except:
+                    pass
             else:
-                st.session_state.u1_match_idx = res.get("match_index") if res.get("match_found") else None
-                llm_ms = res.get("llm_elapsed_ms")
-                if llm_ms is not None:
-                    st.caption(f"LLM time (U1): {llm_ms:.0f} ms")
-                if res.get("match_found"):
+                # Check for backend errors in the response
+                if res.get("error_message"):
+                    st.error(f"Backend error: {res.get('error_message')}")
+                    st.error(f"Error type: {res.get('error_type', 'Unknown')}")
+                    if res.get("debug_info"):
+                        with st.expander("Debug Information"):
+                            st.json(res["debug_info"])
+                else:
+                    st.session_state.u1_match_idx = res.get("match_index") if res.get("match_found") else None
+                    llm_ms = res.get("llm_elapsed_ms")
+                    if llm_ms is not None:
+                        st.caption(f"LLM time (U1): {llm_ms:.0f} ms")
+
+                    # Always show the score, regardless of match_found status
                     best_score = res.get("best_score")
                     if isinstance(best_score, (int, float)):
-                        st.metric("Best score (U1)", f"{best_score:.3f}")
+                        match_status = "✅ Match" if res.get("match_found") else "❌ No match"
+                        st.metric(f"Best score (U1) - {match_status}", f"{best_score:.3f}")
                     else:
                         st.caption("Best score (U1): n/a")
-                if st.session_state.auto_clear_after_match and st.session_state.u1_match_idx is not None:
-                    _queue_clear("u1")
+
+                    # Show debug info if available
+                    if res.get("debug_info"):
+                        with st.expander("Debug Information (U1)"):
+                            st.json(res["debug_info"])
+
+                    if st.session_state.auto_clear_after_match and st.session_state.u1_match_idx is not None:
+                        _queue_clear("u1")
 
     # User 2
     st.subheader("User 2 Input (matches Window 2)")
@@ -379,20 +402,43 @@ with colM:
             try:
                 res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
             except requests.RequestException as e:
-                st.warning(f"U2 similarity failed: {e}")
+                st.error(f"U2 similarity failed: {e}")
+                # Try to extract more details from the response
+                try:
+                    if hasattr(e, 'response') and e.response is not None:
+                        error_detail = e.response.json().get('detail', str(e))
+                        st.error(f"Detailed error: {error_detail}")
+                except:
+                    pass
             else:
-                st.session_state.u2_match_idx = res.get("match_index") if res.get("match_found") else None
-                llm_ms = res.get("llm_elapsed_ms")
-                if llm_ms is not None:
-                    st.caption(f"LLM time (U2): {llm_ms:.0f} ms")
-                if res.get("match_found"):
+                # Check for backend errors in the response
+                if res.get("error_message"):
+                    st.error(f"Backend error: {res.get('error_message')}")
+                    st.error(f"Error type: {res.get('error_type', 'Unknown')}")
+                    if res.get("debug_info"):
+                        with st.expander("Debug Information"):
+                            st.json(res["debug_info"])
+                else:
+                    st.session_state.u2_match_idx = res.get("match_index") if res.get("match_found") else None
+                    llm_ms = res.get("llm_elapsed_ms")
+                    if llm_ms is not None:
+                        st.caption(f"LLM time (U2): {llm_ms:.0f} ms")
+
+                    # Always show the score, regardless of match_found status
                     best_score = res.get("best_score")
                     if isinstance(best_score, (int, float)):
-                        st.metric("Best score (U2)", f"{best_score:.3f}")
+                        match_status = "✅ Match" if res.get("match_found") else "❌ No match"
+                        st.metric(f"Best score (U2) - {match_status}", f"{best_score:.3f}")
                     else:
                         st.caption("Best score (U2): n/a")
-                if st.session_state.auto_clear_after_match and st.session_state.u2_match_idx is not None:
-                    _queue_clear("u2")
+
+                    # Show debug info if available
+                    if res.get("debug_info"):
+                        with st.expander("Debug Information (U2)"):
+                            st.json(res["debug_info"])
+
+                    if st.session_state.auto_clear_after_match and st.session_state.u2_match_idx is not None:
+                        _queue_clear("u2")
 
 # --- LEFT: Window 1 ---
 with colL:

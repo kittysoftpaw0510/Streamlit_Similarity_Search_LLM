@@ -29,8 +29,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your OpenAI API key and desired model
 
-# Start backend with 4 workers
-uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+# Start backend with 1 workers
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 ### 2. Frontend Setup

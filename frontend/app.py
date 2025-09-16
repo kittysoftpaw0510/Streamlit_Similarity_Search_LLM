@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 # ============ CONFIG ============
 st.set_page_config(page_title="Similarity Highlighter", layout="wide")
 BACKEND_BASE = st.secrets.get("BACKEND_BASE", "http://localhost:8000")
-MIN_PREFIX_WORDS = 3
+
 USER1_ID = "user1"
 USER2_ID = "user2"
 
@@ -35,6 +35,9 @@ for k, v in {
 
     # similarity threshold
     "similarity_threshold": 0.5,  # default threshold for match detection
+
+    # batch size for LLM processing
+    "batch_size": 20,  # default batch size
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -92,21 +95,21 @@ def fetch_sentences_and_name(user_id: str, user: int) -> Tuple[List[str], Option
         r.raise_for_status()
         filename = parse_disposition_filename(r.headers.get("Content-Disposition"))
         text = r.text
-        sentences = [s for s in text.split("\n") if s.strip()]
+        sentences = [s.strip() for s in text.splitlines() if s.strip()]
         return sentences, filename
     except Exception as e:
         st.sidebar.error(f"Failed to fetch file for User {user}: {e}")
         return [], None
 
 
-def request_similarity(user_id: str, user: int, text: str, method: str, threshold: float = 0.0):
+def request_similarity(user_id: str, user: int, text: str, method: str, threshold: float = 0.0, batch_size: int = 20):
     payload = {
         "user_id": user_id,
         "user": user,
         "text": text,
-        "min_prefix_words": MIN_PREFIX_WORDS,
         "method": method,
         "threshold": threshold,
+        "batch_size": batch_size,
         # "top_k": 1,  # default is 1
     }
     r = requests.post(f"{BACKEND_BASE}/similarity", json=payload, timeout=60)
@@ -270,6 +273,24 @@ threshold_value = st.sidebar.slider(
 )
 st.session_state.similarity_threshold = threshold_value
 
+st.sidebar.markdown("---")
+# ===== Batch size slider =====
+st.sidebar.markdown("**Batch Size**")
+batch_size_value = st.sidebar.slider(
+    "Number of sentences per batch",
+    min_value=1,
+    max_value=100,
+    value=st.session_state.batch_size,
+    step=1,
+    help=(
+        "Set the number of sentences to process in each batch.\n\n"
+        "• Smaller batches: More granular progress, slower overall\n"
+        "• Larger batches: Faster processing, less granular progress\n"
+        "• Recommended: 10-30 for most use cases"
+    ),
+)
+st.session_state.batch_size = batch_size_value
+
 # ============ FETCH SENTENCES ============
 sent_u1, name_u1 = fetch_sentences_and_name(USER1_ID, 1)
 sent_u2, name_u2 = fetch_sentences_and_name(USER2_ID, 2)
@@ -323,10 +344,10 @@ with colM:
     if not u1_val.strip():
         st.session_state.u1_match_idx = None
 
-    if submitted_u1 and len(u1_val.split()) >= MIN_PREFIX_WORDS:
+    if submitted_u1 and u1_val.strip():
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
+                res = request_similarity(USER1_ID, 1, u1_val, st.session_state.scoring_method, st.session_state.similarity_threshold, st.session_state.batch_size)
             except requests.RequestException as e:
                 st.error(f"U1 similarity failed: {e}")
                 # Try to extract more details from the response
@@ -345,7 +366,21 @@ with colM:
                         with st.expander("Debug Information"):
                             st.json(res["debug_info"])
                 else:
-                    st.session_state.u1_match_idx = res.get("match_index") if res.get("match_found") else None
+                    # Fix highlighting: ensure match_index is valid for current sentences
+                    match_idx = res.get("match_index") if res.get("match_found") else None
+                    if match_idx is not None and 0 <= match_idx < len(sent_u1):
+                        st.session_state.u1_match_idx = match_idx
+                        # Debug: verify the sentence matches
+                        backend_sentence = res.get("best_sentence", "")
+                        frontend_sentence = sent_u1[match_idx] if match_idx < len(sent_u1) else ""
+                        if backend_sentence.strip() != frontend_sentence.strip():
+                            st.warning(f"⚠️ Sentence mismatch detected! Backend returned index {match_idx} but sentences don't match.")
+                            st.write(f"Backend: '{backend_sentence[:100]}...'")
+                            st.write(f"Frontend: '{frontend_sentence[:100]}...'")
+                    else:
+                        st.session_state.u1_match_idx = None
+                        if match_idx is not None:
+                            st.warning(f"⚠️ Invalid match index {match_idx} for {len(sent_u1)} sentences")
                     llm_ms = res.get("llm_elapsed_ms")
                     if llm_ms is not None:
                         st.caption(f"LLM time (U1): {llm_ms:.0f} ms")
@@ -358,10 +393,23 @@ with colM:
                     else:
                         st.caption("Best score (U1): n/a")
 
+                    # Show sorted scores if available
+                    debug_info = res.get("debug_info", {})
+                    if debug_info.get("top_5_results"):
+                        with st.expander("Top 5 Scores (U1)"):
+                            st.write("**Sentences ranked by similarity score:**")
+                            for i, result in enumerate(debug_info["top_5_results"]):
+                                idx = result.get("index", "?")
+                                score = result.get("score", 0.0)
+                                sentence = result.get("sentence", "")
+                                status = "🎯" if i == 0 else f"{i+1}."
+                                st.write(f"{status} **Index {idx}** (Score: {score:.4f})")
+                                st.write(f"   _{sentence}_")
+
                     # Show debug info if available
-                    if res.get("debug_info"):
+                    if debug_info:
                         with st.expander("Debug Information (U1)"):
-                            st.json(res["debug_info"])
+                            st.json(debug_info)
 
                     if st.session_state.auto_clear_after_match and st.session_state.u1_match_idx is not None:
                         _queue_clear("u1")
@@ -397,10 +445,10 @@ with colM:
     if not u2_val.strip():
         st.session_state.u2_match_idx = None
 
-    if submitted_u2 and len(u2_val.split()) >= MIN_PREFIX_WORDS:
+    if submitted_u2 and u2_val.strip():
         with st.spinner("Matching…"):
             try:
-                res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method, st.session_state.similarity_threshold)
+                res = request_similarity(USER2_ID, 2, u2_val, st.session_state.scoring_method, st.session_state.similarity_threshold, st.session_state.batch_size)
             except requests.RequestException as e:
                 st.error(f"U2 similarity failed: {e}")
                 # Try to extract more details from the response
@@ -419,7 +467,21 @@ with colM:
                         with st.expander("Debug Information"):
                             st.json(res["debug_info"])
                 else:
-                    st.session_state.u2_match_idx = res.get("match_index") if res.get("match_found") else None
+                    # Fix highlighting: ensure match_index is valid for current sentences
+                    match_idx = res.get("match_index") if res.get("match_found") else None
+                    if match_idx is not None and 0 <= match_idx < len(sent_u2):
+                        st.session_state.u2_match_idx = match_idx
+                        # Debug: verify the sentence matches
+                        backend_sentence = res.get("best_sentence", "")
+                        frontend_sentence = sent_u2[match_idx] if match_idx < len(sent_u2) else ""
+                        if backend_sentence.strip() != frontend_sentence.strip():
+                            st.warning(f"⚠️ Sentence mismatch detected! Backend returned index {match_idx} but sentences don't match.")
+                            st.write(f"Backend: '{backend_sentence[:100]}...'")
+                            st.write(f"Frontend: '{frontend_sentence[:100]}...'")
+                    else:
+                        st.session_state.u2_match_idx = None
+                        if match_idx is not None:
+                            st.warning(f"⚠️ Invalid match index {match_idx} for {len(sent_u2)} sentences")
                     llm_ms = res.get("llm_elapsed_ms")
                     if llm_ms is not None:
                         st.caption(f"LLM time (U2): {llm_ms:.0f} ms")
@@ -432,10 +494,23 @@ with colM:
                     else:
                         st.caption("Best score (U2): n/a")
 
+                    # Show sorted scores if available
+                    debug_info = res.get("debug_info", {})
+                    if debug_info.get("top_5_results"):
+                        with st.expander("Top 5 Scores (U2)"):
+                            st.write("**Sentences ranked by similarity score:**")
+                            for i, result in enumerate(debug_info["top_5_results"]):
+                                idx = result.get("index", "?")
+                                score = result.get("score", 0.0)
+                                sentence = result.get("sentence", "")
+                                status = "🎯" if i == 0 else f"{i+1}."
+                                st.write(f"{status} **Index {idx}** (Score: {score:.4f})")
+                                st.write(f"   _{sentence}_")
+
                     # Show debug info if available
-                    if res.get("debug_info"):
+                    if debug_info:
                         with st.expander("Debug Information (U2)"):
-                            st.json(res["debug_info"])
+                            st.json(debug_info)
 
                     if st.session_state.auto_clear_after_match and st.session_state.u2_match_idx is not None:
                         _queue_clear("u2")
